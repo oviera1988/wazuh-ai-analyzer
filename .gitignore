@@ -1,0 +1,13 @@
+# Datos y base de datos
+data/
+*.db
+
+# Variables de entorno con credenciales
+backend/.env
+
+# Dependencias y builds
+frontend/node_modules/
+frontend/build/
+__pycache__/
+*.pyc
+.env
