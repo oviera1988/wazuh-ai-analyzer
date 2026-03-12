@@ -6,39 +6,60 @@ import logging
 logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """Eres un experto en ciberseguridad y respuesta a incidentes con más de 15 años de experiencia.
-Analiza la siguiente alerta de Wazuh SIEM y proporciona un análisis completo.
+Analiza la siguiente alerta de Wazuh SIEM y proporciona un análisis ESPECÍFICO y ACCIONABLE.
 
-ALERTA:
+CONTEXTO DEL SERVIDOR AFECTADO:
+- Nombre del servidor: {agent_name}
+- IP del servidor: {agent_ip}
+- ID del agente Wazuh: {agent_id}
+- Manager Wazuh: {manager_name}
+- Labels/Tags: {agent_labels}
+
+DETALLE DE LA ALERTA:
 - ID Regla: {rule_id}
 - Nivel Wazuh: {rule_level}/15 ({severity})
 - Descripción: {rule_description}
 - Grupos/Categorías: {rule_groups}
-- Agente afectado: {agent_name} ({agent_ip})
 - Timestamp: {timestamp}
-- MITRE ATT&CK: {mitre_info}
-- Log completo: {full_log}
-- Datos adicionales: {raw_data}
+- MITRE ATT&CK ID: {mitre_id}
+- MITRE Táctica: {mitre_tactic}
+- MITRE Técnica: {mitre_technique}
 
-Responde ÚNICAMENTE con un JSON válido sin markdown ni backticks:
+DATOS DEL EVENTO:
+{event_data}
+
+LOG COMPLETO:
+{full_log}
+
+INSTRUCCIONES CRÍTICAS:
+- Menciona SIEMPRE el servidor específico ({agent_name} / {agent_ip}) en cada paso
+- Basa el instructivo en los datos reales del evento, no en recetas genéricas
+- Si el log muestra un usuario específico, mencionarlo
+- Si el log muestra una IP de origen, mencionarla y analizarla
+- Si el log muestra una base de datos, archivo o servicio específico, mencionarlo
+- Los comandos deben ser ejecutables directamente en {agent_name}
+- Indica si hay que conectarse por SSH, RDP u otro método según el contexto
+
+Responde ÚNICAMENTE con JSON válido sin markdown ni backticks:
 {{
   "ai_priority": <entero 1-100, donde 100 es máxima urgencia>,
   "ai_severity": "<crítico|alto|medio|bajo|informativo>",
-  "executive_summary": "<resumen ejecutivo en 2-3 oraciones>",
-  "threat_context": "<contexto de la amenaza y patrón de comportamiento>",
-  "affected_assets": "<activos en riesgo>",
-  "false_positive_probability": "<bajo|medio|alto>",
+  "executive_summary": "<qué pasó exactamente en {agent_name}, con los datos específicos del evento>",
+  "threat_context": "<análisis del patrón: quién, desde dónde, qué intentó hacer, basado en los datos reales del log>",
+  "affected_assets": "<servidor {agent_name} ({agent_ip}), servicios/datos específicos mencionados en el log>",
+  "false_positive_probability": "<bajo|medio|alto con justificación breve>",
   "resolution_steps": [
     {{
       "step": 1,
-      "title": "<título corto>",
-      "description": "<descripción detallada>",
-      "commands": ["<comando si aplica>"],
+      "title": "<acción concreta y específica>",
+      "description": "<instrucción detallada mencionando {agent_name}, usuarios/IPs/servicios del evento>",
+      "commands": ["<comando listo para ejecutar en {agent_name}>"],
       "urgency": "<inmediata|1h|4h|24h|rutina>"
     }}
   ],
-  "prevention_measures": ["<medida 1>", "<medida 2>"],
-  "references": ["<url o referencia>"],
-  "mitre_analysis": "<análisis MITRE si aplica>"
+  "prevention_measures": ["<medida específica para {agent_name} basada en lo que ocurrió>"],
+  "references": ["<url relevante>"],
+  "mitre_analysis": "<explicación de cómo esta técnica aplica a lo que ocurrió en {agent_name}>"
 }}"""
 
 SEVERITY_MAP = {
@@ -78,28 +99,43 @@ class AIProcessor:
 
     async def analyze_alert(self, alert):
         severity = self._severity(alert.get("rule_level", 0))
-        mitre_info = "No disponible"
-        if alert.get("mitre_id"):
-            mitre_info = f"ID: {alert['mitre_id']}, Táctica: {alert.get('mitre_tactic', [])}"
+
+        # Extraer labels del agente si existen
+        raw_data = alert.get("raw_data", {})
+        agent_labels = raw_data.get("labels", {}) if isinstance(raw_data, dict) else {}
+        labels_str = ", ".join(f"{k}: {v}" for k, v in agent_labels.items()) if agent_labels else "Sin labels"
+
+        # Formatear datos del evento de forma legible
+        event_fields = {}
+        if isinstance(raw_data, dict):
+            for k, v in raw_data.items():
+                if k != "labels" and v:
+                    event_fields[k] = v
+        event_data_str = "\n".join(f"  {k}: {v}" for k, v in event_fields.items()) if event_fields else "Sin datos adicionales"
 
         prompt = ANALYSIS_PROMPT.format(
+            agent_name=alert.get("agent_name", "desconocido"),
+            agent_ip=alert.get("agent_ip", "desconocida"),
+            agent_id=alert.get("agent_id", ""),
+            manager_name=alert.get("manager_name", ""),
+            agent_labels=labels_str,
             rule_id=alert.get("rule_id", ""),
             rule_level=alert.get("rule_level", 0),
             severity=severity,
             rule_description=alert.get("rule_description", ""),
             rule_groups=", ".join(alert.get("rule_groups", [])),
-            agent_name=alert.get("agent_name", ""),
-            agent_ip=alert.get("agent_ip", ""),
             timestamp=alert.get("timestamp", ""),
-            mitre_info=mitre_info,
-            full_log=str(alert.get("full_log", ""))[:500],
-            raw_data=json.dumps(alert.get("raw_data", {}), ensure_ascii=False)[:300],
+            mitre_id=", ".join(alert.get("mitre_id", [])) or "No identificado",
+            mitre_tactic=", ".join(alert.get("mitre_tactic", [])) or "No identificada",
+            mitre_technique=", ".join(alert.get("mitre_technique", [])) or "No identificada",
+            event_data=event_data_str,
+            full_log=str(alert.get("full_log", ""))[:800],
         )
 
         payload = {
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 2000,
-            "temperature": 0.2,
+            "max_tokens": 3000,
+            "temperature": 0.1,
         }
         headers = {"api-key": self.key, "Content-Type": "application/json"}
 
@@ -129,11 +165,11 @@ class AIProcessor:
         return {
             "ai_priority": min(100, level * 7),
             "ai_severity": self._severity(level),
-            "executive_summary": f"Alerta nivel {level}: {alert.get('rule_description', '')}. Requiere revisión manual.",
+            "executive_summary": f"Alerta nivel {level} en {alert.get('agent_name')}: {alert.get('rule_description', '')}.",
             "threat_context": "Análisis automático no disponible.",
-            "affected_assets": f"Agente: {alert.get('agent_name', 'desconocido')}",
+            "affected_assets": f"Servidor: {alert.get('agent_name')} ({alert.get('agent_ip')})",
             "false_positive_probability": "medio",
-            "resolution_steps": [{"step": 1, "title": "Revisión manual", "description": "Revisar esta alerta manualmente.", "commands": [], "urgency": "4h"}],
+            "resolution_steps": [{"step": 1, "title": "Revisión manual", "description": f"Conectarse a {alert.get('agent_name')} ({alert.get('agent_ip')}) y revisar manualmente.", "commands": [f"ssh admin@{alert.get('agent_ip')}"], "urgency": "4h"}],
             "prevention_measures": ["Revisar configuración de reglas de Wazuh"],
             "references": ["https://documentation.wazuh.com/"],
             "mitre_analysis": "",

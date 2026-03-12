@@ -1,98 +1,87 @@
-"""
-Cliente para Wazuh via OpenSearch/Indexer (puerto 9200)
-Consulta directamente los índices wazuh-alerts-* en OpenSearch
-"""
-
 import httpx
 import logging
 from base64 import b64encode
 
 logger = logging.getLogger(__name__)
 
-
 class WazuhClient:
     def __init__(self, settings):
         self.base_url = settings.wazuh_url.rstrip("/")
-        self.username = settings.wazuh_username
-        self.password = settings.wazuh_password
         self.verify_ssl = settings.wazuh_verify_ssl
         self.timeout = settings.wazuh_timeout
+        creds = b64encode(f"{settings.wazuh_username}:{settings.wazuh_password}".encode()).decode()
+        self.headers = {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
-        creds = b64encode(f"{self.username}:{self.password}".encode()).decode()
-        self.headers = {
-            "Authorization": f"Basic {creds}",
-            "Content-Type": "application/json",
-        }
-
-    async def get_alerts(
-        self,
-        limit: int = 500,
-        offset: int = 0,
-        min_level: int = 3,
-        hours_back: int = 24,
-    ) -> list[dict]:
-        index = "wazuh-alerts-*"
-        alerts = []
-        page_size = min(limit, 500)
-        current_from = offset
-
+    async def get_alerts(self, limit=500, offset=0, min_level=3, hours_back=24):
         query = {
-            "query": {
-                "bool": {
-                    "filter": [
-                        {"range": {"rule.level": {"gte": min_level}}},
-                        {"range": {"@timestamp": {"gte": f"now-{hours_back}h"}}},
-                    ]
+            "size": 0,
+            "query": {"bool": {"filter": [
+                {"range": {"rule.level": {"gte": min_level}}},
+                {"range": {"@timestamp": {"gte": f"now-{hours_back}h"}}}
+            ]}},
+            "aggs": {
+                "by_rule_agent": {
+                    "composite": {
+                        "size": limit,
+                        "sources": [
+                            {"rule_id": {"terms": {"field": "rule.id"}}},
+                            {"agent_name": {"terms": {"field": "agent.name"}}}
+                        ]
+                    },
+                    "aggs": {
+                        "sample": {"top_hits": {"size": 1, "sort": [{"rule.level": {"order": "desc"}}]}},
+                        "total_count": {"value_count": {"field": "rule.id"}},
+                        "last_seen": {"max": {"field": "@timestamp"}},
+                        "first_seen": {"min": {"field": "@timestamp"}}
+                    }
                 }
-            },
-            "sort": [{"@timestamp": {"order": "desc"}}],
-            "_source": [
-                "id", "timestamp", "@timestamp",
-                "rule.id", "rule.level", "rule.description",
-                "rule.groups", "rule.mitre",
-                "agent.id", "agent.name", "agent.ip",
-                "manager.name", "data", "full_log",
-            ],
+            }
         }
 
+        alerts = []
         async with httpx.AsyncClient(verify=self.verify_ssl, timeout=self.timeout) as client:
-            while len(alerts) < limit:
-                query["from"] = current_from
-                query["size"] = min(page_size, limit - len(alerts))
+            try:
+                resp = await client.post(
+                    f"{self.base_url}/wazuh-alerts-*/_search",
+                    headers=self.headers,
+                    json=query,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                buckets = data.get("aggregations", {}).get("by_rule_agent", {}).get("buckets", [])
 
-                try:
-                    resp = await client.post(
-                        f"{self.base_url}/{index}/_search",
-                        headers=self.headers,
-                        json=query,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-
-                    hits = data.get("hits", {}).get("hits", [])
+                for bucket in buckets:
+                    hits = bucket.get("sample", {}).get("hits", {}).get("hits", [])
                     if not hits:
-                        break
+                        continue
+                    src = hits[0]["_source"]
+                    doc_id = hits[0]["_id"]
+                    count = bucket.get("total_count", {}).get("value", 1)
+                    last_seen = bucket.get("last_seen", {}).get("value_as_string", "")
+                    first_seen = bucket.get("first_seen", {}).get("value_as_string", "")
 
-                    alerts.extend(self._normalize_alert(h["_source"], h["_id"]) for h in hits)
-                    current_from += len(hits)
+                    alert = self._normalize(src, doc_id)
+                    alert["occurrence_count"] = count
+                    alert["last_seen"] = last_seen
+                    alert["first_seen"] = first_seen
+                    alert["wazuh_id"] = f"group_{alert['rule_id']}_{alert['agent_name']}"
+                    alerts.append(alert)
 
-                    if len(hits) < page_size:
-                        break
+                logger.info(f"Obtenidos {len(alerts)} grupos únicos desde OpenSearch")
 
-                except httpx.HTTPStatusError as e:
-                    logger.error(f"Error HTTP consultando OpenSearch: {e}")
-                    break
-                except Exception as e:
-                    logger.error(f"Error inesperado: {e}")
-                    break
+            except Exception as e:
+                logger.error(f"Error consultando OpenSearch: {e}")
 
-        logger.info(f"Obtenidas {len(alerts)} alertas desde OpenSearch")
-        return alerts[:limit]
+        return alerts
 
-    def _normalize_alert(self, src: dict, doc_id: str) -> dict:
+    def _normalize(self, src, doc_id):
         rule = src.get("rule", {})
         agent = src.get("agent", {})
         mitre = rule.get("mitre", {})
+        raw_data = src.get("data", {}) or {}
+        agent_labels = agent.get("labels", {})
+        if agent_labels:
+            raw_data["labels"] = agent_labels
 
         return {
             "wazuh_id": src.get("id") or doc_id,
@@ -108,6 +97,9 @@ class WazuhClient:
             "agent_name": agent.get("name", "unknown"),
             "agent_ip": agent.get("ip", ""),
             "manager_name": src.get("manager", {}).get("name", ""),
-            "raw_data": src.get("data", {}),
+            "raw_data": raw_data,
             "full_log": src.get("full_log", ""),
+            "occurrence_count": 1,
+            "last_seen": "",
+            "first_seen": "",
         }
