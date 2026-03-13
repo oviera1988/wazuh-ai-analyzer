@@ -197,9 +197,13 @@ class AIProcessor:
         }
   
   
-  def normalize_severity(priority: int) -> str:
-    if priority >= 90: return "crítico"
-    if priority >= 70: return "alto"
-    if priority >= 40: return "medio"
+
+
+
+
+def normalize_severity(priority: int) -> str:
+    if priority >= 95: return "crítico"
+    if priority >= 85: return "alto"
+    if priority >= 65: return "medio"
     if priority >= 20: return "bajo"
     return "informativo"
