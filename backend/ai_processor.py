@@ -163,7 +163,9 @@ class AIProcessor:
                 content = content.split("```")[1]
                 if content.startswith("json"):
                     content = content[4:]
-            return json.loads(content)
+            result = json.loads(content)
+            result["ai_severity"] = normalize_severity(result.get("ai_priority", 0))
+            return result
 
     async def reprocess_single(self, alert, db):
         analysis = await self.analyze_alert(alert)
@@ -193,3 +195,11 @@ class AIProcessor:
             "references": ["https://documentation.wazuh.com/"],
             "mitre_analysis": "",
         }
+  
+  
+  def normalize_severity(priority: int) -> str:
+    if priority >= 90: return "crítico"
+    if priority >= 70: return "alto"
+    if priority >= 40: return "medio"
+    if priority >= 20: return "bajo"
+    return "informativo"
