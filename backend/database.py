@@ -42,7 +42,7 @@ class Database:
                     ai_severity TEXT,
                     ai_analysis TEXT,        -- JSON object con el análisis completo
                     processed_at TEXT,
-                    created_at TEXT DEFAULT (datetime('now'))
+                    created_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_ai_priority ON alerts(ai_priority DESC);
@@ -182,11 +182,24 @@ class Database:
             stats["top_agents"] = [{"agent": row[0], "count": row[1]} for row in await cursor.fetchall()]
 
             cursor = await db.execute(
-                "SELECT * FROM alerts ORDER BY ai_priority DESC LIMIT 5"
+                "SELECT rule_id, rule_description, COUNT(*) as cnt FROM alerts GROUP BY rule_id ORDER BY cnt DESC LIMIT 10"
             )
-            db.row_factory = aiosqlite.Row
-            rows = await cursor.fetchall()
-            stats["top_priority"] = []
+            stats["top_rules"] = [{"rule_id": row[0], "description": row[1], "count": row[2]} for row in await cursor.fetchall()]
+
+            cursor = await db.execute(
+                "SELECT mitre_tactic, COUNT(*) as cnt FROM alerts WHERE mitre_tactic != '[]' AND mitre_tactic != '' GROUP BY mitre_tactic ORDER BY cnt DESC LIMIT 8"
+            )
+            raw_mitre = await cursor.fetchall()
+            mitre_list = []
+            for row in raw_mitre:
+                try:
+                    tactics = json.loads(row[0]) if row[0] else []
+                    for t in (tactics if isinstance(tactics, list) else [tactics]):
+                        if t:
+                            mitre_list.append({"tactic": t, "count": row[1]})
+                except Exception:
+                    pass
+            stats["top_mitre"] = mitre_list[:6]
 
         return stats
 
@@ -246,3 +259,25 @@ class Database:
                 except Exception:
                     pass
         return d
+
+    async def get_last_processed_timestamp(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                cursor = await db.execute(
+                    "SELECT message FROM sync_status WHERE id=1 AND status='completed'"
+                )
+                # Guardamos el timestamp en la columna last_sync
+                cursor2 = await db.execute("SELECT last_sync FROM sync_status WHERE id=1")
+                row = await cursor2.fetchone()
+                # Buscamos el first_seen más antiguo en la BD
+                cursor3 = await db.execute(
+                    "SELECT MIN(first_seen) FROM alerts WHERE first_seen != ''"
+                )
+                row3 = await cursor3.fetchone()
+                return row3[0] if row3 and row3[0] else None
+            except Exception:
+                return None
+
+    async def save_last_processed_timestamp(self, timestamp: str):
+        # Se guarda automáticamente via last_sync en update_sync_status
+        pass

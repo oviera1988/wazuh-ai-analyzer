@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     wazuh_password: str = ""
     wazuh_verify_ssl: bool = False
     wazuh_timeout: int = 30
+    min_rule_level: int = 12
+    excluded_rule_ids: str = ""
 
     azure_openai_endpoint: str = ""
     azure_openai_key: str = ""

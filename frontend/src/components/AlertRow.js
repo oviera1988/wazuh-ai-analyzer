@@ -58,7 +58,7 @@ export default function AlertRow({ alert, rank }) {
               📡 {alert.agent_name}
             </div>
             <div style={{ fontSize: 11, color: '#656d76' }}>
-              {alert.timestamp ? new Date(alert.timestamp).toLocaleString() : '—'}
+              {alert.timestamp ? new Date(alert.timestamp).toLocaleString('es-UY', {timeZone: 'America/Montevideo'}) : '—'}
             </div>
           </div>
 

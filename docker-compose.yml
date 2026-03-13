@@ -8,6 +8,7 @@ services:
       - ./backend/.env
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////app/data/wazuh_alerts.db
+      - MAX_ALERTS_PER_SYNC=20
     volumes:
       - /docker/wazuh-ai-analyzer/data:/app/data
     restart: unless-stopped

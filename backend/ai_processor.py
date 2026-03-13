@@ -8,12 +8,12 @@ logger = logging.getLogger(__name__)
 ANALYSIS_PROMPT = """Eres un experto en ciberseguridad y respuesta a incidentes con más de 15 años de experiencia.
 Analiza la siguiente alerta de Wazuh SIEM y proporciona un análisis ESPECÍFICO y ACCIONABLE.
 
-CONTEXTO DEL SERVIDOR AFECTADO:
-- Nombre del servidor: {agent_name}
-- IP del servidor: {agent_ip}
-- ID del agente Wazuh: {agent_id}
-- Manager Wazuh: {manager_name}
-- Labels/Tags: {agent_labels}
+CONTEXTO DEL AGENTE WAZUH:
+- Nombre del agente: {agent_name}
+- IP del agente: {agent_ip}
+- ID del agente: {agent_id}
+
+{real_source_section}
 
 DETALLE DE LA ALERTA:
 - ID Regla: {rule_id}
@@ -21,6 +21,9 @@ DETALLE DE LA ALERTA:
 - Descripción: {rule_description}
 - Grupos/Categorías: {rule_groups}
 - Timestamp: {timestamp}
+- Ocurrencias en el período: {occurrence_count}
+- Primera vez visto: {first_seen}
+- Última vez visto: {last_seen}
 - MITRE ATT&CK ID: {mitre_id}
 - MITRE Táctica: {mitre_tactic}
 - MITRE Técnica: {mitre_technique}
@@ -32,35 +35,49 @@ LOG COMPLETO:
 {full_log}
 
 INSTRUCCIONES CRÍTICAS:
-- Menciona SIEMPRE el servidor específico ({agent_name} / {agent_ip}) en cada paso
-- Basa el instructivo en los datos reales del evento, no en recetas genéricas
-- Si el log muestra un usuario específico, mencionarlo
-- Si el log muestra una IP de origen, mencionarla y analizarla
-- Si el log muestra una base de datos, archivo o servicio específico, mencionarlo
-- Los comandos deben ser ejecutables directamente en {agent_name}
-- Indica si hay que conectarse por SSH, RDP u otro método según el contexto
+- Si hay una FUENTE REAL identificada (no el agente Wazuh), los pasos de resolución deben referirse a ESA fuente, NO al servidor Wazuh
+- Mencioná siempre el sistema/dispositivo específico donde hay que actuar
+- Basá el instructivo en los datos reales del evento, no en recetas genéricas
+- Si hay usuarios, IPs, remitentes, destinatarios específicos en el evento, mencionarlos
+- Los comandos y acciones deben ser ejecutables en el sistema correcto
 
 Responde ÚNICAMENTE con JSON válido sin markdown ni backticks:
 {{
-  "ai_priority": <entero 1-100, donde 100 es máxima urgencia>,
+  "ai_priority": <entero 1-100>,
   "ai_severity": "<crítico|alto|medio|bajo|informativo>",
-  "executive_summary": "<qué pasó exactamente en {agent_name}, con los datos específicos del evento>",
-  "threat_context": "<análisis del patrón: quién, desde dónde, qué intentó hacer, basado en los datos reales del log>",
-  "affected_assets": "<servidor {agent_name} ({agent_ip}), servicios/datos específicos mencionados en el log>",
-  "false_positive_probability": "<bajo|medio|alto con justificación breve>",
+  "executive_summary": "<qué pasó exactamente, con datos específicos del evento>",
+  "threat_context": "<análisis del patrón: quién, desde dónde, qué intentó hacer>",
+  "affected_assets": "<sistema/dispositivo real afectado con detalles específicos>",
+  "false_positive_probability": "<bajo|medio|alto con justificación>",
   "resolution_steps": [
     {{
       "step": 1,
-      "title": "<acción concreta y específica>",
-      "description": "<instrucción detallada mencionando {agent_name}, usuarios/IPs/servicios del evento>",
-      "commands": ["<comando listo para ejecutar en {agent_name}>"],
+      "title": "<acción concreta>",
+      "description": "<instrucción detallada indicando EN QUÉ SISTEMA actuar>",
+      "commands": ["<comando o URL o acción específica>"],
       "urgency": "<inmediata|1h|4h|24h|rutina>"
     }}
   ],
-  "prevention_measures": ["<medida específica para {agent_name} basada en lo que ocurrió>"],
+  "prevention_measures": ["<medida específica basada en lo ocurrido>"],
   "references": ["<url relevante>"],
-  "mitre_analysis": "<explicación de cómo esta técnica aplica a lo que ocurrió en {agent_name}>"
+  "mitre_analysis": "<cómo aplica esta técnica al evento específico>"
 }}"""
+
+
+def build_real_source_section(real_source):
+    if not real_source:
+        return ""
+    details = real_source.get("real_source_details", {})
+    details_str = "\n".join(f"  - {k}: {v}" for k, v in details.items() if v)
+    return f"""
+⚠️ FUENTE REAL DEL EVENTO (NO es el servidor Wazuh):
+- Tipo: {real_source.get('real_source_type', '')}
+- Sistema/Servicio: {real_source.get('real_source_name', '')}
+- Cómo acceder: {real_source.get('real_source_access', '')}
+- Detalles específicos del evento:
+{details_str}
+"""
+
 
 SEVERITY_MAP = {
     range(1, 4): "informativo",
@@ -69,6 +86,7 @@ SEVERITY_MAP = {
     range(11, 13): "alto",
     range(13, 16): "crítico",
 }
+
 
 class AIProcessor:
     def __init__(self, settings):
@@ -99,13 +117,9 @@ class AIProcessor:
 
     async def analyze_alert(self, alert):
         severity = self._severity(alert.get("rule_level", 0))
-
-        # Extraer labels del agente si existen
         raw_data = alert.get("raw_data", {})
-        agent_labels = raw_data.get("labels", {}) if isinstance(raw_data, dict) else {}
-        labels_str = ", ".join(f"{k}: {v}" for k, v in agent_labels.items()) if agent_labels else "Sin labels"
+        real_source = alert.get("real_source")
 
-        # Formatear datos del evento de forma legible
         event_fields = {}
         if isinstance(raw_data, dict):
             for k, v in raw_data.items():
@@ -117,14 +131,16 @@ class AIProcessor:
             agent_name=alert.get("agent_name", "desconocido"),
             agent_ip=alert.get("agent_ip", "desconocida"),
             agent_id=alert.get("agent_id", ""),
-            manager_name=alert.get("manager_name", ""),
-            agent_labels=labels_str,
+            real_source_section=build_real_source_section(real_source),
             rule_id=alert.get("rule_id", ""),
             rule_level=alert.get("rule_level", 0),
             severity=severity,
             rule_description=alert.get("rule_description", ""),
             rule_groups=", ".join(alert.get("rule_groups", [])),
             timestamp=alert.get("timestamp", ""),
+            occurrence_count=alert.get("occurrence_count", 1),
+            first_seen=alert.get("first_seen", ""),
+            last_seen=alert.get("last_seen", ""),
             mitre_id=", ".join(alert.get("mitre_id", [])) or "No identificado",
             mitre_tactic=", ".join(alert.get("mitre_tactic", [])) or "No identificada",
             mitre_technique=", ".join(alert.get("mitre_technique", [])) or "No identificada",
@@ -162,15 +178,18 @@ class AIProcessor:
 
     def _fallback(self, alert):
         level = alert.get("rule_level", 0)
+        real_source = alert.get("real_source")
+        system = real_source.get("real_source_name") if real_source else alert.get("agent_name")
+        access = real_source.get("real_source_access") if real_source else f"ssh admin@{alert.get('agent_ip')}"
         return {
             "ai_priority": min(100, level * 7),
             "ai_severity": self._severity(level),
-            "executive_summary": f"Alerta nivel {level} en {alert.get('agent_name')}: {alert.get('rule_description', '')}.",
+            "executive_summary": f"Alerta nivel {level} en {system}: {alert.get('rule_description', '')}.",
             "threat_context": "Análisis automático no disponible.",
-            "affected_assets": f"Servidor: {alert.get('agent_name')} ({alert.get('agent_ip')})",
+            "affected_assets": system,
             "false_positive_probability": "medio",
-            "resolution_steps": [{"step": 1, "title": "Revisión manual", "description": f"Conectarse a {alert.get('agent_name')} ({alert.get('agent_ip')}) y revisar manualmente.", "commands": [f"ssh admin@{alert.get('agent_ip')}"], "urgency": "4h"}],
-            "prevention_measures": ["Revisar configuración de reglas de Wazuh"],
+            "resolution_steps": [{"step": 1, "title": "Revisión manual", "description": f"Acceder al sistema: {access}", "commands": [access], "urgency": "4h"}],
+            "prevention_measures": ["Revisar configuración"],
             "references": ["https://documentation.wazuh.com/"],
             "mitre_analysis": "",
         }

@@ -55,7 +55,7 @@ export default function Layout({ children }) {
               {syncing ? (
                 <span style={{ color: '#388bfd' }}>⟳ {syncStatus.message}</span>
               ) : syncStatus.last_sync ? (
-                `Última sync: ${new Date(syncStatus.last_sync).toLocaleTimeString()}`
+                `Última sync: ${new Date(syncStatus.last_sync + 'Z').toLocaleTimeString('es-UY', {timeZone: 'America/Montevideo'})}`
               ) : 'Sin sincronizar'}
             </span>
           )}

@@ -186,7 +186,7 @@ export default function AlertDetail() {
           <SectionTitle>📡 Activos Afectados</SectionTitle>
           <InfoRow label="Agente" value={`${alert.agent_name} (${alert.agent_ip})`} />
           <InfoRow label="Manager" value={alert.manager_name} />
-          <InfoRow label="Timestamp" value={new Date(alert.timestamp).toLocaleString()} />
+          <InfoRow label="Timestamp" value={new Date(alert.timestamp).toLocaleString('es-UY', {timeZone: 'America/Montevideo'})} />
           <InfoRow label="Activos en riesgo" value={analysis.affected_assets} />
           <InfoRow label="Falso positivo" value={analysis.false_positive_probability} />
         </div>
