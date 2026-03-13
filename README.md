@@ -1,11 +1,11 @@
 # 🛡️ Wazuh AI Analyzer
 
-Dashboard de seguridad que descarga alertas desde Wazuh SIEM, las analiza con Claude AI y las presenta priorizadas con instructivos de resolución paso a paso.
+Dashboard de seguridad que descarga alertas desde Wazuh SIEM, las analiza con AI y las presenta priorizadas con instructivos de resolución paso a paso.
 
 ## ✨ Características
 
 - **Descarga automática** de alertas desde la API REST de Wazuh v4
-- **Análisis con IA** (Claude de Anthropic): prioridad 0-100, resumen ejecutivo, contexto de amenaza
+- **Análisis con IA** (GPT 4.1): prioridad 0-100, resumen ejecutivo, contexto de amenaza
 - **Instructivos de resolución** detallados con comandos y urgencia por paso
 - **Dashboard interactivo**: filtros por severidad/agente, gráficos, paginación
 - **Mapeo MITRE ATT&CK**: identificación de técnicas y tácticas
