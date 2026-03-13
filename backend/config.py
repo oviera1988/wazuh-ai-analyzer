@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     wazuh_password: str = ""
     wazuh_verify_ssl: bool = False
     wazuh_timeout: int = 30
-    min_rule_level: int = 12
+    min_rule_level: int = 10
     excluded_rule_ids: str = ""
 
     azure_openai_endpoint: str = ""
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     azure_openai_deployment: str = "gpt-4.1"
     azure_openai_api_version: str = "2025-01-01-preview"
 
-    max_alerts_per_sync: int = 500
+    max_alerts_per_sync: int = 20
     ai_batch_size: int = 5
     database_url: str = "sqlite+aiosqlite:///./wazuh_alerts.db"
 
