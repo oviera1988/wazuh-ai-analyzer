@@ -1,216 +1,176 @@
-# 🛡️ Wazuh AI Analyzer
+# Wazuh AI Analyzer
 
-Dashboard de seguridad que descarga alertas desde Wazuh SIEM, las analiza con AI y las presenta priorizadas con instructivos de resolución paso a paso.
+Dashboard de seguridad que descarga alertas de Wazuh SIEM, las procesa con Azure OpenAI GPT-4.1 y presenta un análisis priorizado con instrucciones de resolución específicas para cada caso.
 
-## ✨ Características
+## Arquitectura
+```
+Wazuh SIEM (OpenSearch :9200)
+        ↓
+Backend FastAPI (Python)
+        ↓
+Azure OpenAI GPT-4.1
+        ↓
+SQLite (persistente)
+        ↓
+Frontend React (Nginx)
+```
 
-- **Descarga automática** de alertas desde la API REST de Wazuh v4
-- **Análisis con IA** (GPT 4.1): prioridad 0-100, resumen ejecutivo, contexto de amenaza
-- **Instructivos de resolución** detallados con comandos y urgencia por paso
-- **Dashboard interactivo**: filtros por severidad/agente, gráficos, paginación
-- **Mapeo MITRE ATT&CK**: identificación de técnicas y tácticas
-- **Re-análisis**: vuelve a procesar cualquier alerta con un clic
-- **SQLite integrado**: sin dependencias externas de BD
+## Stack tecnológico
 
----
+- **Backend**: Python 3.12, FastAPI, aiosqlite, httpx
+- **IA**: Azure OpenAI GPT-4.1
+- **Base de datos**: SQLite (persistente en volumen Docker)
+- **Frontend**: React, Recharts, Nginx
+- **Infraestructura**: Docker Compose
 
-## 🚀 Inicio Rápido
+## Funcionalidades
 
-### Opción A: Docker Compose (recomendado)
+### Recolección de alertas
+- Conecta al indexer OpenSearch de Wazuh (puerto 9200, autenticación Basic)
+- Agrupa alertas por `rule_id + agent_name + src_ip + hora` para evitar duplicados
+- Solo procesa alertas con nivel Wazuh configurable (por defecto nivel 10+)
+- Excluye reglas ruidosas configurables (por defecto excluye regla 100200)
+- Acumula alertas por hora: cada sync trae grupos nuevos sin re-procesar anteriores
 
+### Análisis con IA
+- Cada grupo de alertas es analizado por Azure OpenAI GPT-4.1
+- El prompt incluye contexto específico del servidor afectado (nombre, IP, labels)
+- Detección automática de fuente real para eventos de dispositivos externos:
+  - **Office 365**: redirige a security.microsoft.com, incluye usuario, remitente, destinatario, veredicto
+  - **Fortigate**: redirige a consola del firewall, incluye IP origen/destino, política, acción
+  - **Syslog genérico**: identifica dispositivo por srcip
+- Genera por cada alerta:
+  - Prioridad IA (1-100)
+  - Severidad (crítico/alto/medio/bajo/informativo)
+  - Resumen ejecutivo con datos específicos del evento
+  - Contexto de amenaza
+  - Pasos de resolución accionables con comandos listos para ejecutar
+  - Medidas de prevención
+  - Referencias
+  - Análisis MITRE ATT&CK
+
+### Dashboard
+- **Cards de severidad clickeables**: filtran la lista al hacer click
+- **Gráfico por severidad**: barras interactivas, click para filtrar
+- **Gráfico top tipos de evento**: barras horizontales con los eventos más frecuentes
+- **Top agentes clickeables**: click en un agente filtra la lista, con barra de proporción
+- **Widget MITRE ATT&CK**: tácticas más frecuentes
+- **Tags de filtros activos**: chips removibles mostrando filtros aplicados
+- **Vista detalle de alerta**: pasos de resolución, análisis MITRE, log estructurado con tabs
+
+## Configuración
+
+### Variables de entorno (`backend/.env`)
+```env
+# Wazuh / OpenSearch
+WAZUH_URL=https://<ip-wazuh>:9200
+WAZUH_USERNAME=admin
+WAZUH_PASSWORD=<password>
+WAZUH_VERIFY_SSL=false
+
+# Azure OpenAI
+AZURE_OPENAI_ENDPOINT=https://<nombre>.openai.azure.com
+AZURE_OPENAI_KEY=<key>
+AZURE_OPENAI_DEPLOYMENT=gpt-4.1
+AZURE_OPENAI_API_VERSION=2025-01-01-preview
+
+# Sync
+MAX_ALERTS_PER_SYNC=20          # Grupos máximos por sincronización
+MIN_RULE_LEVEL=10               # Nivel mínimo de alerta Wazuh (1-15)
+EXCLUDED_RULE_IDS=100200        # IDs de reglas a excluir (separados por coma)
+AI_BATCH_SIZE=5                 # Alertas procesadas en paralelo por la IA
+```
+
+### Niveles de severidad Wazuh
+
+| Nivel | Severidad     |
+|-------|---------------|
+| 1-3   | Informativo   |
+| 4-7   | Bajo          |
+| 8-10  | Medio         |
+| 11-12 | Alto          |
+| 13-15 | Crítico       |
+
+## Despliegue
+
+### Requisitos
+- Docker y Docker Compose
+- Acceso al indexer OpenSearch de Wazuh (puerto 9200)
+- Cuenta Azure OpenAI con deployment GPT-4.1
+
+### Instalación
 ```bash
-# 1. Clonar el proyecto
-git clone <repo>
+git clone https://github.com/oviera1988/wazuh-ai-analyzer.git
 cd wazuh-ai-analyzer
 
-# 2. Configurar variables de entorno
+# Configurar variables
 cp backend/.env.example backend/.env
-# Editar backend/.env con tus credenciales
+nano backend/.env
 
-# 3. Levantar
-docker-compose up -d
+# Crear directorio de datos persistentes
+mkdir -p /docker/wazuh-ai-analyzer/data
 
-# Frontend: http://localhost:3000
-# Backend API: http://localhost:8000/docs
+# Levantar servicios
+docker compose up -d
 ```
 
-### Opción B: Desarrollo local
+### URLs
+- **Frontend**: http://\<servidor\>:8080
+- **Backend API**: http://\<servidor\>:8000
+- **Swagger docs**: http://\<servidor\>:8000/docs
 
-**Backend:**
+## Comandos útiles
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env           # Configurar credenciales
-uvicorn main:app --reload
-# API disponible en: http://localhost:8000
-# Docs interactivos: http://localhost:8000/docs
+# Sincronizar alertas manualmente
+curl -s http://localhost:8000/sync -X POST
+
+# Ver estado de sync
+curl -s http://localhost:8000/sync/status | python3 -m json.tool
+
+# Ver logs del backend
+docker compose logs backend -f
+
+# Reconstruir después de cambios en código
+docker compose build --no-cache backend
+docker compose up -d backend
+
+# Backup de la base de datos
+cp /docker/wazuh-ai-analyzer/data/wazuh_alerts.db /docker/wazuh-ai-analyzer/data/wazuh_alerts.db.bak
 ```
 
-**Frontend:**
-```bash
-cd frontend
-npm install
-npm start
-# App en: http://localhost:3000
-```
-
----
-
-## ⚙️ Configuración (.env)
-
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `WAZUH_URL` | URL de tu Wazuh Manager | `https://192.168.1.100:55000` |
-| `WAZUH_USERNAME` | Usuario con permiso de lectura | `wazuh-readonly` |
-| `WAZUH_PASSWORD` | Contraseña | `MiPassword123` |
-| `WAZUH_VERIFY_SSL` | Verificar SSL (false para certs autofirmados) | `false` |
-| `ANTHROPIC_API_KEY` | API Key de Anthropic | `sk-ant-...` |
-| `AI_MODEL` | Modelo de Claude a usar | `claude-opus-4-5` |
-| `MAX_ALERTS_PER_SYNC` | Alertas por ciclo de sync | `500` |
-| `AI_BATCH_SIZE` | Procesamiento paralelo con IA | `5` |
-
-### Crear usuario de solo lectura en Wazuh
-
-```bash
-# En el servidor Wazuh
-curl -k -X POST "https://localhost:55000/security/users" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "wazuh-readonly",
-    "password": "MiPassword123"
-  }'
-
-# Asignar rol de lectura
-curl -k -X POST "https://localhost:55000/security/users/{user_id}/roles" \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"role_ids": [1]}'
-```
-
----
-
-## 🔌 Endpoints de la API
-
-| Método | Ruta | Descripción |
-|---|---|---|
-| `POST` | `/sync` | Inicia descarga y análisis IA |
-| `GET` | `/sync/status` | Estado del último ciclo |
-| `GET` | `/alerts` | Lista alertas (filtros, paginación) |
-| `GET` | `/alerts/{id}` | Detalle con instructivo completo |
-| `POST` | `/alerts/{id}/reprocess` | Re-analizar con IA |
-| `GET` | `/alerts/summary/stats` | Estadísticas para el dashboard |
-| `GET` | `/alerts/agents/list` | Lista de agentes únicos |
-
-**Parámetros de `/alerts`:**
-- `severity`: crítico|alto|medio|bajo|informativo
-- `agent`: filtro por nombre de agente (parcial)
-- `sort_by`: ai_priority|timestamp|rule_level
-- `limit` / `offset`: paginación
-
----
-
-## 🏗️ Arquitectura
-
-```
-┌─────────────────┐     REST API    ┌──────────────────────────┐
-│   Wazuh SIEM    │ ──────────────► │   Backend (FastAPI)       │
-│  (puerto 55000) │                 │  ┌─────────────────────┐  │
-└─────────────────┘                 │  │  WazuhClient        │  │
-                                    │  │  (descarga alertas) │  │
-                                    │  └──────────┬──────────┘  │
-┌─────────────────┐                 │             │              │
-│  Anthropic API  │ ◄───────────────│  ┌──────────▼──────────┐  │
-│  (Claude)       │                 │  │  AIProcessor        │  │
-└─────────────────┘                 │  │  (analiza c/ IA)    │  │
-                                    │  └──────────┬──────────┘  │
-                                    │             │              │
-                                    │  ┌──────────▼──────────┐  │
-                                    │  │  SQLite Database    │  │
-                                    │  └─────────────────────┘  │
-                                    └────────────▲─────────────┘
-                                                 │ JSON API
-                                    ┌────────────┴─────────────┐
-                                    │   Frontend (React)        │
-                                    │   Dashboard + Detalle     │
-                                    └───────────────────────────┘
-```
-
----
-
-## 📊 Análisis de IA por alerta
-
-Cada alerta procesada incluye:
-
-```json
-{
-  "ai_priority": 87,
-  "ai_severity": "alto",
-  "executive_summary": "Intento de escalada de privilegios detectado en el servidor...",
-  "threat_context": "Patrón consistente con técnica T1068 de MITRE...",
-  "affected_assets": "Servidor web prod-01, datos de usuarios",
-  "false_positive_probability": "bajo",
-  "resolution_steps": [
-    {
-      "step": 1,
-      "title": "Aislar el proceso sospechoso",
-      "description": "Identificar y detener el proceso que generó la alerta...",
-      "commands": ["ps aux | grep suspicious", "kill -9 <PID>"],
-      "urgency": "inmediata"
-    }
-  ],
-  "prevention_measures": ["Actualizar parches del SO", "Revisar sudoers"],
-  "mitre_analysis": "T1068 - Exploitation for Privilege Escalation..."
-}
-```
-
----
-
-## 🛠️ Estructura del Proyecto
-
+## Estructura del proyecto
 ```
 wazuh-ai-analyzer/
 ├── backend/
-│   ├── main.py           # API FastAPI + endpoints
-│   ├── config.py         # Configuración (pydantic-settings)
-│   ├── wazuh_client.py   # Cliente API REST de Wazuh
-│   ├── ai_processor.py   # Integración con Claude AI
-│   ├── database.py       # SQLite con aiosqlite
+│   ├── main.py           # FastAPI: endpoints /sync, /alerts, /health
+│   ├── config.py         # Configuración via pydantic-settings
+│   ├── wazuh_client.py   # Cliente OpenSearch con agrupación compuesta
+│   ├── ai_processor.py   # Azure OpenAI GPT-4.1 con prompt contextual
+│   ├── database.py       # SQLite async (aiosqlite)
 │   ├── models.py         # Modelos Pydantic
 │   ├── requirements.txt
-│   ├── Dockerfile
-│   └── .env.example
+│   └── Dockerfile
 ├── frontend/
 │   ├── src/
 │   │   ├── pages/
-│   │   │   ├── Dashboard.js   # Lista priorizada + filtros
-│   │   │   └── AlertDetail.js # Detalle + instructivo de resolución
+│   │   │   ├── Dashboard.js    # Dashboard principal con filtros y gráficos
+│   │   │   └── AlertDetail.js  # Detalle de alerta + resolución IA
 │   │   ├── components/
-│   │   │   ├── Layout.js      # Header + botón de sync
-│   │   │   └── AlertRow.js    # Fila de alerta con prioridad
-│   │   └── utils/api.js       # Cliente HTTP hacia el backend
+│   │   │   ├── Layout.js       # Header con botón sync
+│   │   │   └── AlertRow.js     # Fila de alerta con prioridad
+│   │   └── utils/api.js        # Cliente HTTP
 │   ├── Dockerfile
 │   └── nginx.conf
 └── docker-compose.yml
 ```
 
----
+## Persistencia de datos
 
-## 🔒 Consideraciones de Seguridad
+La base de datos SQLite se almacena en `/docker/wazuh-ai-analyzer/data/wazuh_alerts.db` en el host, mapeada al contenedor en `/app/data/wazuh_alerts.db`. Los datos sobreviven reinicios y reconstrucciones de la imagen.
 
-1. **Nunca** expongas el backend directamente a internet sin autenticación
-2. Usa HTTPS para comunicación con Wazuh en producción
-3. La API key de Anthropic y las credenciales de Wazuh son secretos — no las commitees al repositorio
-4. Considera agregar autenticación JWT al backend para uso en equipos
+## Lógica de acumulación
 
----
-
-## 📈 Próximas Mejoras
-
-- [ ] Autenticación JWT en el backend
-- [ ] Notificaciones por email/Slack para alertas críticas
-- [ ] Sincronización automática cada N minutos (scheduler)
-- [ ] Exportación de reportes a PDF
-- [ ] Correlación de alertas relacionadas
-- [ ] Historial de cambios de estado por alerta
+Cada sincronización genera IDs con formato `group_{rule_id}_{agent_name}_{src_ip}_{año-mes-día-hora}`. Esto permite:
+- Evitar re-procesar el mismo grupo en la misma hora
+- Acumular nuevos grupos hora a hora
+- Detectar cambios en patrones de ataque por IP origen
